@@ -34,11 +34,15 @@ namespace DocumentTextExtractorApi.Controllers
             if (result != null)
                 return Content(result);
 
-            result = GetTextFromDocx(ms);
-            if (result != null)
-                return Content(result);
+            //result = await GetTextFromDocxUsingCustomLibrary(ms);
+            //if (result != null)
+            //    return Content(result);
 
-            result = await GetTextFromDoc(ms);
+            //result = await GetTextFromDoc(ms);
+            //if (result != null)
+            //    return Content(result);
+
+            result = await GetTextFromDocDocxUsingLibreOffice(ms);
             if (result != null)
                 return Content(result);
 
@@ -63,7 +67,7 @@ namespace DocumentTextExtractorApi.Controllers
                 
                 using (FileStream docx = new FileStream(Path.Combine(tmpPath, tmpDocFile + ".docx"), FileMode.Open, FileAccess.Read))
                 {
-                    return GetTextFromDocx(docx);
+                    return GetTextFromDocxUsingCustomLibrary(docx);
                 }
             }
             catch (Exception ex)
@@ -74,6 +78,38 @@ namespace DocumentTextExtractorApi.Controllers
             {
                 if (System.IO.File.Exists(tmpDocFile + ".docx"))
                     System.IO.File.Delete(tmpDocFile + ".docx");
+                if (System.IO.File.Exists(tmpDocFile))
+                    System.IO.File.Delete(tmpDocFile);
+            }
+        }
+
+        private async Task<string> GetTextFromDocDocxUsingLibreOffice(MemoryStream ms)
+        {
+            var tmpPath = Path.GetTempPath();
+            var tmpDocFile = Path.GetRandomFileName().Replace(".", "");
+
+            try
+            {
+                using (FileStream file = new FileStream(Path.Combine(tmpPath, tmpDocFile), FileMode.Create, FileAccess.Write))
+                {
+                    ms.Seek(0, SeekOrigin.Begin);
+                    await ms.CopyToAsync(file);
+                    file.Close();
+                }
+
+                var result = RunCommand($"cd \"{tmpPath}\" && lowriter --convert-to 'txt:Text (encoded):UTF8' {tmpDocFile}");
+                var data = await System.IO.File.ReadAllBytesAsync(Path.Combine(tmpPath, tmpDocFile + ".txt"));
+                var text = Encoding.UTF8.GetString(data);
+                return text;
+            }
+            catch (Exception ex)
+            {
+                return null;
+            }
+            finally
+            {
+                if (System.IO.File.Exists(tmpDocFile + ".txt"))
+                    System.IO.File.Delete(tmpDocFile + ".txt");
                 if (System.IO.File.Exists(tmpDocFile))
                     System.IO.File.Delete(tmpDocFile);
             }
@@ -112,7 +148,7 @@ namespace DocumentTextExtractorApi.Controllers
             }
         }
 
-        private string GetTextFromDocx(Stream ms)
+        private string GetTextFromDocxUsingCustomLibrary(Stream ms)
         {
             try
             {
