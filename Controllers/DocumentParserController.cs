@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web;
 
 // For more information on enabling Web API for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
 
@@ -32,7 +33,7 @@ namespace DocumentTextExtractorApi.Controllers
 
             var result = await GetTextFromLaTeX(ms);
             if (result != null)
-                return Content(result);
+                return Content(HttpUtility.HtmlEncode(result));
 
             //result = await GetTextFromDocxUsingCustomLibrary(ms);
             //if (result != null)
@@ -44,7 +45,7 @@ namespace DocumentTextExtractorApi.Controllers
 
             result = await GetTextFromDocDocxUsingLibreOffice(ms);
             if (result != null)
-                return Content(result);
+                return Content(HttpUtility.HtmlEncode(result));
 
             return StatusCode(415);
         }
