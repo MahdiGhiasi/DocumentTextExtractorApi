@@ -1,5 +1,6 @@
 ﻿using DocumentTextExtractorApi.Classes;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -16,6 +17,16 @@ namespace DocumentTextExtractorApi.Controllers
     [ApiController]
     public class DocumentParserController : ControllerBase
     {
+        private readonly TimeSpan maxWaitForProcess = TimeSpan.FromSeconds(45);
+        private readonly ILogger _logger;
+
+        private SemaphoreQueue commandSemaphore = new SemaphoreQueue(1, 1);
+
+        public DocumentParserController(ILogger<DocumentParserController> logger)
+        {
+            _logger = logger;
+        }
+
         [HttpGet]
         public string Home()
         {
@@ -31,23 +42,40 @@ namespace DocumentTextExtractorApi.Controllers
             await Request.Body.CopyToAsync(ms);
             ms.Seek(0, SeekOrigin.Begin);
 
-            var result = await GetTextFromLaTeX(ms);
-            if (result != null)
-                return Content(HttpUtility.HtmlEncode(result));
+            try
+            {
+                await commandSemaphore.WaitAsync();
 
-            //result = await GetTextFromDocxUsingCustomLibrary(ms);
-            //if (result != null)
-            //    return Content(result);
+                _logger.LogInformation($"{DateTime.Now}: Received request, attempting to parse it as LaTeX file...");
+                var result = await GetTextFromLaTeX(ms);
+                if (result != null)
+                {
+                    _logger.LogInformation($"{DateTime.Now}: LaTeX parse successful. Result length = {result.Length}");
+                    return Content(result, "text/plain", Encoding.UTF8);
+                }
 
-            //result = await GetTextFromDoc(ms);
-            //if (result != null)
-            //    return Content(result);
+                //result = await GetTextFromDocxUsingCustomLibrary(ms);
+                //if (result != null)
+                //    return Content(result);
 
-            result = await GetTextFromDocDocxUsingLibreOffice(ms);
-            if (result != null)
-                return Content(HttpUtility.HtmlEncode(result));
+                //result = await GetTextFromDoc(ms);
+                //if (result != null)
+                //    return Content(result);
 
-            return StatusCode(415);
+                result = await GetTextFromDocDocxUsingLibreOffice(ms);
+                if (result != null)
+                {
+                    _logger.LogInformation($"{DateTime.Now}: LibreOffice parse successful. Result length = {result.Length}");
+                    return Content(result, "text/plain", Encoding.UTF8);
+                }
+
+                _logger.LogInformation($"{DateTime.Now}: Failed to parse the input file. Will respond with 415.");
+                return StatusCode(415);
+            }
+            finally
+            {
+                commandSemaphore.Release();
+            }
         }
 
         private async Task<string> GetTextFromDoc(MemoryStream ms)
@@ -64,7 +92,7 @@ namespace DocumentTextExtractorApi.Controllers
                     file.Close();
                 }
 
-                var result = RunCommand($"cd \"{tmpPath}\" && lowriter --convert-to docx {tmpDocFile}");
+                RunCommand($"cd \"{tmpPath}\" && lowriter --convert-to docx {tmpDocFile}");
                 
                 using (FileStream docx = new FileStream(Path.Combine(tmpPath, tmpDocFile + ".docx"), FileMode.Open, FileAccess.Read))
                 {
@@ -73,6 +101,7 @@ namespace DocumentTextExtractorApi.Controllers
             }
             catch (Exception ex)
             {
+                _logger.LogWarning($"GetTextFromDoc failed: {ex}");
                 return null;
             }
             finally
@@ -98,13 +127,14 @@ namespace DocumentTextExtractorApi.Controllers
                     file.Close();
                 }
 
-                var result = RunCommand($"cd \"{tmpPath}\" && lowriter --convert-to 'txt:Text (encoded):UTF8' {tmpDocFile}");
+                RunCommand($"cd \"{tmpPath}\" && lowriter --convert-to 'txt:Text (encoded):UTF8' {tmpDocFile}");
                 var data = await System.IO.File.ReadAllBytesAsync(Path.Combine(tmpPath, tmpDocFile + ".txt"));
                 var text = Encoding.UTF8.GetString(data);
                 return text;
             }
             catch (Exception ex)
             {
+                _logger.LogWarning($"GetTextFromDocDocxUsingLibreOffice failed: {ex}");
                 return null;
             }
             finally
@@ -121,7 +151,10 @@ namespace DocumentTextExtractorApi.Controllers
             ms.Seek(0, SeekOrigin.Begin);
             var data = ms.ToArray();
             if (data.Contains((byte)0))
+            {
+                _logger.LogInformation("File is binary, so not a latex file.");
                 return null; // This is a binary file, so definitely not a latex file.
+            }
 
             var tmpPath = Path.GetTempPath();
             var tmpFile = Path.GetRandomFileName().Replace(".", "");
@@ -135,17 +168,22 @@ namespace DocumentTextExtractorApi.Controllers
                     file.Close();
                 }
 
-                var result = RunCommand($"cd \"{tmpPath}\" && detex {tmpFile}.tex");
-                return result;
+                RunCommand($"cd \"{tmpPath}\" && detex -n {tmpFile}.tex > {tmpFile}.txt");
+                var textData = await System.IO.File.ReadAllBytesAsync(Path.Combine(tmpPath, tmpFile + ".txt"));
+                var text = Encoding.UTF8.GetString(textData);
+                return text;
             }
             catch (Exception ex)
             {
+                _logger.LogWarning($"GetTextFromLaTeX failed: {ex}");
                 return null;
             }
             finally
             {
                 if (System.IO.File.Exists(tmpFile + ".tex"))
                     System.IO.File.Delete(tmpFile + ".tex");
+                if (System.IO.File.Exists(tmpFile + ".txt"))
+                    System.IO.File.Delete(tmpFile + ".txt");
             }
         }
 
@@ -161,15 +199,15 @@ namespace DocumentTextExtractorApi.Controllers
 
                 return text;
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogWarning($"GetTextFromDocxUsingCustomLibrary failed: {ex}");
                 return null;
             }
         }
 
-        private string RunCommand(string command)
+        private bool RunCommand(string command)
         {
-            string result = "";
             using (System.Diagnostics.Process proc = new System.Diagnostics.Process())
             {
                 proc.StartInfo.FileName = "/bin/bash";
@@ -179,12 +217,24 @@ namespace DocumentTextExtractorApi.Controllers
                 proc.StartInfo.RedirectStandardError = true;
                 proc.Start();
 
-                result += proc.StandardOutput.ReadToEnd();
-                result += proc.StandardError.ReadToEnd();
+                _logger.LogInformation($"{DateTime.Now}: Running command '{command}'...");
 
-                proc.WaitForExit();
+                var exited = proc.WaitForExit((int)maxWaitForProcess.TotalMilliseconds);
+                if (!exited)
+                {
+                    _logger.LogInformation($"{DateTime.Now}: Command did not exit after {maxWaitForProcess.TotalSeconds} seconds. Will try to kill it.");
+                    try
+                    {
+                        proc.Kill();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError($"{DateTime.Now}: Killing command failed. Will ignore. Exception: {ex}");
+                    }
+                    return false;
+                }
             }
-            return result;
+            return true;
         }
     }
 }
