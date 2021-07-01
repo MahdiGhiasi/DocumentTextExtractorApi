@@ -9,6 +9,7 @@ RUN apt-get -y install gnupg
 RUN add-apt-repository ppa:libreoffice/libreoffice-7-0 && apt-get update
 RUN apt-get -y install texlive-base
 RUN apt-get -y install default-jre libreoffice-java-common libreoffice-writer
+RUN apt-get -y install untex
 
 FROM mcr.microsoft.com/dotnet/core/sdk:3.1-buster AS build
 WORKDIR /src

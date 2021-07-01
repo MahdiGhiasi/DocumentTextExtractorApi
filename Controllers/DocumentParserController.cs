@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -54,6 +55,14 @@ namespace DocumentTextExtractorApi.Controllers
                     return Content(result, "text/plain", Encoding.UTF8);
                 }
 
+                _logger.LogInformation($"{DateTime.Now}: attempting to parse it as zipped LaTeX group file containing 'main.tex'...");
+                result = await GetTextFromLaTeXZip(ms);
+                if (result != null)
+                {
+                    _logger.LogInformation($"{DateTime.Now}: LaTeX zip group parse successful. Result length = {result.Length}");
+                    return Content(result, "text/plain", Encoding.UTF8);
+                }
+
                 //result = await GetTextFromDocxUsingCustomLibrary(ms);
                 //if (result != null)
                 //    return Content(result);
@@ -62,6 +71,7 @@ namespace DocumentTextExtractorApi.Controllers
                 //if (result != null)
                 //    return Content(result);
 
+                _logger.LogInformation($"{DateTime.Now}: attempting to parse it as a word document...");
                 result = await GetTextFromDocDocxUsingLibreOffice(ms);
                 if (result != null)
                 {
@@ -146,6 +156,49 @@ namespace DocumentTextExtractorApi.Controllers
             }
         }
 
+        private async Task<string> GetTextFromLaTeXZip(MemoryStream ms)
+        {           
+            var tmpPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName().Replace(".", ""));
+            Directory.CreateDirectory(tmpPath);
+
+            try
+            {
+                try
+                {
+                    ms.Seek(0, SeekOrigin.Begin);
+                    var zipFile = new ZipArchive(ms);
+                    ZipFileExtensions.ExtractToDirectory(zipFile, tmpPath, true);
+                }
+                catch (Exception)
+                {
+                    _logger.LogInformation("Received file is not a zip file. GetTextFromLaTeXZip will return null.");
+                    return null;
+                }
+
+                var tmpFile = Path.Combine(tmpPath, "main.tex");
+                if (!System.IO.File.Exists(tmpFile))
+                {
+                    _logger.LogInformation("main.tex not found in the received zip file. GetTextFromLaTeXZip will return null.");
+                    return null;
+                }
+
+                RunCommand($"cd \"{tmpPath}\" && untex -m -o -e -a -i {tmpFile} > {tmpFile}.txt");
+                var textData = await System.IO.File.ReadAllBytesAsync(tmpFile + ".txt");
+                var text = Encoding.UTF8.GetString(textData);
+                return text;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"GetTextFromLaTeXZip failed: {ex}");
+                return null;
+            }
+            finally
+            {
+                if (Directory.Exists(tmpPath))
+                    Directory.Delete(tmpPath, true);
+            }
+        }
+
         private async Task<string> GetTextFromLaTeX(MemoryStream ms)
         {
             ms.Seek(0, SeekOrigin.Begin);
@@ -168,7 +221,7 @@ namespace DocumentTextExtractorApi.Controllers
                     file.Close();
                 }
 
-                RunCommand($"cd \"{tmpPath}\" && detex -n {tmpFile}.tex > {tmpFile}.txt");
+                RunCommand($"cd \"{tmpPath}\" && untex -m -o -e -a {tmpFile}.tex > {tmpFile}.txt");
                 var textData = await System.IO.File.ReadAllBytesAsync(Path.Combine(tmpPath, tmpFile + ".txt"));
                 var text = Encoding.UTF8.GetString(textData);
                 return text;
