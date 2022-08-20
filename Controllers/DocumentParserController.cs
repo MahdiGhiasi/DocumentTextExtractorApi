@@ -18,7 +18,7 @@ namespace DocumentTextExtractorApi.Controllers
     [ApiController]
     public class DocumentParserController : ControllerBase
     {
-        private readonly TimeSpan maxWaitForProcess = TimeSpan.FromSeconds(300);
+        private readonly TimeSpan maxWaitForProcess = TimeSpan.FromMinutes(20);
         private readonly ILogger _logger;
 
         private SemaphoreQueue commandSemaphore = new SemaphoreQueue(1, 1);
