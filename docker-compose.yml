@@ -1,7 +1,23 @@
 version: '2'
 services:
-    web:
+    web1:
         build: .
         ports:
-            - "9144:80"
+            - "9991:80"
+        restart: always
+    web2:
+        build: .
+        ports:
+            - "9992:80"
+        restart: always
+    web3:
+        build: .
+        ports:
+            - "9993:80"
+        restart: always
+    haproxy:
+        image: docker.arvancloud.com/haproxy:1.9
+        volumes:
+            - ./haproxy/:/usr/local/etc/haproxy/
+        network_mode: host
         restart: always
